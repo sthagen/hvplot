@@ -384,7 +384,7 @@ class HoloViewsConverter(object):
         self.label = label
         self._relabel = {'label': label} if label else {}
         self._dim_ranges = {'c': clim or (None, None)}
-        self._redim = fields
+        self._redim.update(fields)
 
         # High-level options
         self._validate_kwds(kwds)
@@ -576,27 +576,21 @@ class HoloViewsConverter(object):
         self.groupby = groupby
         self.streaming = streaming
         self.hover_cols = hover_cols
-        self._redim_label = {}
 
+        self._redim = {}
         if da is not None and attr_labels:
             try:
-                xyz_tuples = [(i, z, da[z].attrs) for i, z in enumerate(da.coords)]
-                xyz_tuples.append(('v', da.name, da.attrs))
+                var_tuples = [(var, da[var].attrs) for var in da.coords]
+                var_tuples.append((da.name, da.attrs))
 
                 long_name = {}
                 units = {}
                 # var as in variable name
-                for xyz_str, xyz_name, xyz_attrs in xyz_tuples:
-                    long_name[xyz_str] = xyz_attrs.get('long_name', '')
-                    if 'units' in xyz_attrs:
-                        units[xyz_str] = '[{0}]'.format(
-                            xyz_attrs['units'])
-                    else:
-                        units[xyz_str] = ''
-                    xyz_label = ' '.join([long_name[xyz_str],
-                                          units[xyz_str]])
-                    if xyz_label.strip() != '':
-                        self._redim_label[xyz_name] = xyz_label
+                for var_name, var_attrs in var_tuples:
+                    print(var_attrs)
+                    self._redim[var_name] = hv.Dimension(var_name,
+                        label=var_attrs.get('long_name', ''),
+                        unit=var_attrs.get('units', ''))
             except Exception as e:
                 param.main.warning('Unable to auto label using xarray attrs '
                                    'because {e}; suppress this warning '
@@ -853,15 +847,13 @@ class HoloViewsConverter(object):
             if element is Bars and not self.subplots:
                 return (element(data, [x]+self.by, ys)
                         .relabel(**self._relabel)
-                        .redim.label(**self._redim_label)
                         .redim(**self._redim)
                         .opts(opts))
             chart = Dataset(data, self.by+[x], ys).to(element, x, ys, self.by).relabel(**self._relabel)
             chart = chart.layout() if self.subplots else chart.overlay()
         else:
             chart = element(data, x, ys).relabel(**self._relabel)
-        return (chart.redim(**self._redim).opts(opts)
-                .redim.label(**self._redim_label))
+        return (chart.redim(**self._redim).opts(opts))
 
     def _process_args(self, data, x, y):
         data = (self.data if data is None else data)
@@ -901,8 +893,7 @@ class HoloViewsConverter(object):
                 'NdOverlay': dict(plot=dict(self._overlay_opts, batched=False))}
         charts = []
         for c in y:
-            chart = (element(data, x, [c]+self.hover_cols).redim(**{c: self.value_label})
-                     .redim.label(**self._redim_label))
+            chart = (element(data, x, [c]+self.hover_cols).redim(**{c: self.value_label}))
             charts.append((c, chart.relabel(**self._relabel)))
         return self._by_type(charts, self.group_label, sort=False).opts(opts)
 
@@ -977,7 +968,7 @@ class HoloViewsConverter(object):
             obj = Dataset(df, kdims, vdims).to(element, x).layout()
         else:
             obj = element(df, kdims, vdims)
-        return (obj.redim(**self._redim).redim.label(**self._redim_label)
+        return (obj.redim(**self._redim)
                 .relabel(**self._relabel).opts(**opts))
 
     def bar(self, x, y, data=None):
@@ -1007,7 +998,6 @@ class HoloViewsConverter(object):
         if not isinstance(y, (list, tuple)):
             ranges = {y: ylim}
             return (element(data, self.by, y).redim.range(**ranges)
-                    .redim.label(**self._redim_label)
                     .relabel(**self._relabel).opts(**opts))
 
         labelled = ['y' if self.invert else 'x'] if self.group_label != 'Group' else []
@@ -1030,18 +1020,18 @@ class HoloViewsConverter(object):
         df = melt(data, var_name=self.group_label, value_name=self.value_label)
         ranges = {self.value_label: ylim}
         return (element(df, kdims, self.value_label).redim(**self._redim)
-                .redim.range(**ranges).redim.label(**self._redim_label)
+                .redim.range(**ranges)
                 .relabel(**self._relabel).opts(**opts))
 
     def box(self, x, y, data=None):
-        return self._stats_plot(BoxWhisker, y, data)
+        return self._stats_plot(BoxWhisker, y, data).redim(**self._redim)
 
     def violin(self, x, y, data=None):
         try:
             from holoviews.element import Violin
         except ImportError:
             raise ImportError('Violin plot requires HoloViews version >=1.10')
-        return self._stats_plot(Violin, y, data)
+        return self._stats_plot(Violin, y, data).redim(**self._redim)
 
     def hist(self, x, y, data=None):
         data, x, y = self._process_args(data, x, y)
@@ -1098,8 +1088,7 @@ class HoloViewsConverter(object):
         for col in y:
             hist = histogram(ds, dimension=col, **hist_opts)
             hists.append((col, hist.relabel(**self._relabel)))
-        return (self._by_type(hists, sort=False).redim(**self._redim)
-                .opts(opts).redim.label(**self._redim_label))
+        return (self._by_type(hists, sort=False).redim(**self._redim).opts(opts))
 
     def kde(self, x, y, data=None):
         data, x, y = self._process_args(data, x, y)
@@ -1128,7 +1117,6 @@ class HoloViewsConverter(object):
                                   [self.group_label])
         return (dists.redim(**self._redim)
                 .redim.range(**ranges)
-                .redim.label(**self._redim_label)
                 .relabel(**self._relabel)
                 .opts(opts))
 
@@ -1148,7 +1136,7 @@ class HoloViewsConverter(object):
         hmap = HeatMap(data, [x, y], z).redim(**self._redim).opts(**opts)
         if 'reduce_function' in self.kwds:
             return hmap.aggregate(function=self.kwds['reduce_function'])
-        return hmap.redim.label(**self._redim_label)
+        return hmap
 
     def hexbin(self, x, y, data=None):
         data = self.data if data is None else data
@@ -1164,8 +1152,7 @@ class HoloViewsConverter(object):
             opts['plot']['gridsize'] = self.kwds['gridsize']
         if 'min_count' in self.kwds:
             opts['plot']['min_count'] = self.kwds['min_count']
-        return (HexTiles(data, [x, y], z or []).redim(**self._redim).opts(**opts)
-                .redim.label(**self._redim_label))
+        return HexTiles(data, [x, y], z or []).redim(**self._redim).opts(**opts)
 
     def bivariate(self, x, y, data=None):
         data = self.data if data is None else data
@@ -1173,8 +1160,7 @@ class HoloViewsConverter(object):
         if not y: y = data.columns[1]
 
         opts = dict(plot=self._plot_opts, norm=self._norm_opts, style=self._style_opts)
-        return (Bivariate(data, [x, y]).redim(**self._redim).opts(**opts)
-                .redim.label(**self._redim_label))
+        return (Bivariate(data, [x, y]).redim(**self._redim).opts(**opts))
 
     def table(self, x=None, y=None, data=None):
         allowed = ['width', 'height']
@@ -1232,7 +1218,6 @@ class HoloViewsConverter(object):
         return (element(data, [x, y], z, **params)
                 .redim(**self._redim)
                 .redim.range(**ranges)
-                .redim.label(**self._redim_label)
                 .opts(**opts))
 
     def rgb(self, x=None, y=None, data=None):
@@ -1264,7 +1249,7 @@ class HoloViewsConverter(object):
         for b in range(nbands):
             eldata += (data.isel(**{bands: b}).values,)
         rgb = RGB(eldata, [x, y], RGB.vdims[:nbands], **params)
-        return rgb.redim(**self._redim).opts(**opts).redim.label(**self._redim_label)
+        return rgb.redim(**self._redim).opts(**opts)
 
     def quadmesh(self, x=None, y=None, z=None, data=None):
         import xarray as xr
@@ -1288,7 +1273,6 @@ class HoloViewsConverter(object):
         return (element(data, [x, y], z, **params)
                 .redim(**self._redim)
                 .redim.range(**ranges)
-                .redim.label(**self._redim_label)
                 .opts(**opts))
 
     def contour(self, x=None, y=None, z=None, data=None, filled=False):
@@ -1321,7 +1305,7 @@ class HoloViewsConverter(object):
         if isinstance(levels, int):
             opts['plot']['color_levels'] = levels
         return (contours(qmesh, filled=filled, levels=levels)
-                .opts(**opts).redim.label(**self._redim_label))
+                .opts(**opts))
 
     def contourf(self, x=None, y=None, z=None, data=None):
         return self.contour(x, y, z, data, filled=True)
@@ -1358,7 +1342,6 @@ class HoloViewsConverter(object):
         return (element(data, [x, y], **params)
                 .redim(**self._redim)
                 .redim.range(**ranges)
-                .redim.label(**self._redim_label)
                 .opts(**opts))
 
     def vectorfield(self, x=None, y=None, angle=None, mag=None, data=None):
@@ -1417,7 +1400,6 @@ class HoloViewsConverter(object):
         return (element(data, [x, y], **params)
                 .redim(**self._redim)
                 .redim.range(**ranges)
-                .redim.label(**self._redim_label)
                 .opts(**opts))
 
     def polygons(self, x=None, y=None, data=None):

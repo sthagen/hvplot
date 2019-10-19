@@ -75,7 +75,7 @@ def _from_networkx(G, positions, nodes=None, cls=Graph, **kwargs):
     node_columns = defaultdict(list)
 
     # Unpack node positions
-    for idx, pos in sorted(positions.items()):
+    for idx, pos in positions.items():
         node = G.nodes.get(idx)
         if node is None:
             continue
@@ -236,7 +236,11 @@ def draw(G, pos=None, **kwargs):
         comparisons = []
         for edge in kwargs['edgelist']:
             comparisons.append(edges == edge)
-        g = g.iloc[np.logical_and(*np.logical_or.reduce(comparisons).T)]
+        if len(comparisons):
+            selector = np.logical_and(*np.logical_or.reduce(comparisons).T)
+            g = g.iloc[selector]
+        else:
+            g = g.iloc[:0]
 
     # Compute options
     inspection_policy = kwargs.pop('inspection_policy', 'nodes')

@@ -4,13 +4,29 @@ Provides utilities to convert data and projections
 from __future__ import absolute_import
 
 from distutils.version import LooseVersion
+from types import FunctionType
 
 import pandas as pd
 import holoviews as hv
+import param
+try:
+    import panel as pn
+    panel_available = True
+except:
+    panel_available = False
 
 from holoviews.core.util import basestring
 
 hv_version = LooseVersion(hv.__version__)
+
+
+def with_hv_extension(func, extension='bokeh', logo=False):
+    """If hv.extension is not loaded, load before calling function"""
+    def wrapper(*args, **kwargs):
+        if extension and not getattr(hv.extension, '_loaded', False):
+            hv.extension(extension, logo=logo)
+        return func(*args, **kwargs)
+    return wrapper
 
 
 def get_ipy():
@@ -31,10 +47,11 @@ def check_crs(crs):
     --------
     >>> p = check_crs('+units=m +init=epsg:26915')
     >>> p.srs
-    '+units=m +init=epsg:26915 '
+    '+proj=utm +zone=15 +datum=NAD83 +units=m +no_defs'
     >>> p = check_crs('wrong')
     >>> p is None
     True
+
     Returns
     -------
     A valid crs if possible, otherwise None
@@ -79,7 +96,10 @@ def proj_to_cartopy(proj):
 
     proj = check_crs(proj)
 
-    if proj.is_latlong():
+    if hasattr(proj, 'crs'):
+        if proj.crs.is_geographic:
+            return ccrs.PlateCarree()
+    elif proj.is_latlong():  # pyproj<2.0
         return ccrs.PlateCarree()
 
     srs = proj.srs
@@ -180,7 +200,15 @@ def process_crs(crs):
         raise ValueError("Projection must be defined as a EPSG code, proj4 string, cartopy CRS or pyproj.Proj.")
     return crs
 
-
+def is_tabular(data):
+    if check_library(data, ['dask', 'streamz', 'pandas', 'geopandas']):
+        return True
+    elif check_library(data, 'intake'):
+        from intake.source.base import DataSource
+        if isinstance(data, DataSource):
+            return data.container == 'dataframe'
+    else:
+        return False
 
 def is_series(data):
     if not check_library(data, ['dask', 'streamz', 'pandas']):
@@ -195,7 +223,6 @@ def is_series(data):
         return isinstance(data, dd.Series)
     else:
         return False
-
 
 def check_library(obj, library):
     if not isinstance(library, list):
@@ -226,6 +253,12 @@ def is_xarray(data):
     from xarray import DataArray, Dataset
     return isinstance(data, (DataArray, Dataset))
 
+def is_xarray_dataarray(data):
+    if not check_library(data, 'xarray'):
+        return False
+    from xarray import DataArray
+    return isinstance(data, DataArray)
+
 
 def process_intake(data, use_dask):
     if data.container not in ('dataframe', 'xarray'):
@@ -251,6 +284,19 @@ def process_xarray(data, x, y, by, groupby, use_dask, persist, gridded, label, v
         name = data.name or label or value_label
         dataset = data.to_dataset(name=name)
 
+    all_vars = list(other_dims) if other_dims else []
+    for var in [x, y, by, groupby]:
+        if isinstance(var, list):
+            all_vars.extend(var)
+        elif isinstance(var, str):
+            all_vars.append(var)
+
+    if not gridded:
+        not_found = [var for var in all_vars if var not in list(dataset.data_vars) + list(dataset.coords)]
+        _, extra_vars, extra_coords = process_derived_datetime_xarray(dataset, not_found)
+        dataset = dataset.assign_coords(**{var: dataset[var] for var in extra_coords})
+        dataset = dataset.assign(**{var: dataset[var] for var in extra_vars})
+
     data_vars = list(dataset.data_vars)
     ignore = (by or []) + (groupby or [])
     dims = [c for c in dataset.coords if dataset[c].shape != () and c not in ignore][::-1]
@@ -260,6 +306,13 @@ def process_xarray(data, x, y, by, groupby, use_dask, persist, gridded, label, v
         data = dataset
         if len(dims) < 2:
             dims += [dim for dim in list(data.dims)[::-1] if dim not in dims]
+        if not (x or y):
+            for c in dataset.coords:
+                axis = dataset[c].attrs.get('axis', '')
+                if axis.lower() == 'x':
+                    x = c
+                elif axis.lower() == 'y':
+                    y = c
         if not (x or y):
             x, y = index_dims[:2] if len(index_dims) > 1 else dims[:2]
         elif x and not y:
@@ -286,9 +339,84 @@ def process_xarray(data, x, y, by, groupby, use_dask, persist, gridded, label, v
         elif not x and not y:
             x, y = dims[0], data_vars
 
+        for var in [x, y]:
+            if isinstance(var, list):
+                all_vars.extend(var)
+            elif isinstance(var, str):
+                all_vars.append(var)
+
+        covered_dims = []
+        for var in all_vars:
+            if var in dataset.coords:
+                covered_dims.extend(dataset[var].dims)
+        leftover_dims = [dim for dim in dims if dim not in covered_dims + all_vars]
+
         if by is None:
-            by = [c for c in dims if c not in (x, y)]
-            if len(by) > 1: by = []
+            by = leftover_dims if len(leftover_dims) == 1 else []
         if groupby is None:
-            groupby = [c for c in dims if c not in by+[x, y]]
+            groupby = [c for c in leftover_dims if c not in by]
     return data, x, y, by, groupby
+
+
+def process_derived_datetime_xarray(data, not_found):
+    from pandas.api.types import is_datetime64_any_dtype as isdate
+    extra_vars = []
+    extra_coords = []
+    for var in not_found:
+        if '.' in var:
+            derived_from = var.split('.')[0]
+            if isdate(data[derived_from]):
+                if derived_from in data.coords:
+                    extra_coords.append(var)
+                else:
+                    extra_vars.append(var)
+    not_found = [var for var in not_found if var not in extra_vars + extra_coords]
+    return not_found, extra_vars, extra_coords
+
+
+def process_derived_datetime_pandas(data, not_found, indexes=None):
+    from pandas.api.types import is_datetime64_any_dtype as isdate
+    indexes = indexes or []
+    extra_cols = {}
+    for var in not_found:
+        if '.' in var:
+            parts = var.split('.')
+            base_col = parts[0]
+            dt_str = parts[-1]
+            if base_col in data.columns:
+                if isdate(data[base_col]):
+                    extra_cols[var] = getattr(data[base_col].dt, dt_str)
+            elif base_col == 'index':
+                if isdate(data.index):
+                    extra_cols[var] = getattr(data.index, dt_str)
+            elif base_col in indexes:
+                index = data.axes[indexes.index(base_col)]
+                if isdate(index):
+                    extra_cols[var] = getattr(index, dt_str)
+    data = data.assign(**extra_cols)
+    not_found = [var for var in not_found if var not in extra_cols.keys()]
+
+    return not_found, data
+
+
+def process_dynamic_args(x, y, kind, **kwds):
+    dynamic = {}
+    arg_deps = []
+    arg_names = []
+
+    for k, v in list(kwds.items()) + [('x', x), ('y', y), ('kind', kind)]:
+        if isinstance(v, param.Parameter):
+            dynamic[k] = v
+        elif panel_available and isinstance(v, pn.widgets.Widget):
+            if LooseVersion(pn.__version__) < '0.6.4':
+                dynamic[k] = v.param.value
+            else:
+                dynamic[k] = v
+
+    for k, v in kwds.items():
+        if k not in dynamic and isinstance(v, FunctionType) and hasattr(v, '_dinfo'):
+            deps = v._dinfo['dependencies']
+            arg_deps += list(deps)
+            arg_names += list(k) * len(deps)
+
+    return dynamic, arg_deps, arg_names

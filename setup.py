@@ -123,12 +123,14 @@ def package_assets(example_path):
 
 install_requires = [
     'bokeh >=1.0.0',
+    'colorcet',
     'holoviews >=1.11.0',
     'pandas'
 ]
 
 _examples_extra = [
     'geoviews >=1.6.0',
+    'panel',
     'geopandas',
     'xarray',
     'networkx',
@@ -139,6 +141,7 @@ _examples_extra = [
     'dask',
     'datashader >=0.6.5',
     'notebook >=5.4',
+    'rasterio',
     's3fs',
     'scipy',
     'pillow',
@@ -153,12 +156,12 @@ extras_require = {
         'flake8',
         'parameterized',
         'pytest',
-        'nbsmoke >=0.2.0'
+        'nbsmoke >=0.2.0',
     ],
     'examples': _examples_extra,
     'doc': _examples_extra + [
         'nbsite >=0.5.1',
-        'sphinx_ioam_theme',
+        'sphinx_pyviz_theme',
         'tornado <6.0'
     ]
 }
@@ -209,7 +212,10 @@ setup_args = dict(
     entry_points={
         'console_scripts': [
             'hvplot = hvplot.__main__:main'
-        ]
+        ],
+        'pandas_plotting_backends': [
+            'holoviews = hvplot:plotting',
+        ],
     },
 )
 
@@ -224,4 +230,3 @@ if __name__ == '__main__':
 
     if os.path.isdir(example_path):
         shutil.rmtree(example_path)
-

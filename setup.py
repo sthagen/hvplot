@@ -123,21 +123,21 @@ def package_assets(example_path):
 
 install_requires = [
     'bokeh >=1.0.0',
-    'colorcet',
+    'colorcet >=2',
     'holoviews >=1.11.0',
     'pandas'
 ]
 
-_examples_extra = [
+_examples = [
     'geoviews >=1.6.0',
     'panel',
     'geopandas',
     'xarray',
     'networkx',
-    'pygraphviz',
     'streamz >=0.3.0',
     'intake',
     'intake-parquet',
+    'intake-xarray',
     'dask',
     'datashader >=0.6.5',
     'notebook >=5.4',
@@ -149,6 +149,10 @@ _examples_extra = [
     'phantomjs',
 ]
 
+_examples_extra = _examples + [
+    'pygraphviz',
+]
+
 extras_require = {
     'tests': [
         'coveralls',
@@ -158,10 +162,11 @@ extras_require = {
         'pytest',
         'nbsmoke >=0.2.0',
     ],
-    'examples': _examples_extra,
+    'examples': _examples,
+    'examples_extra': _examples_extra,
     'doc': _examples_extra + [
         'nbsite >=0.5.1',
-        'sphinx_pyviz_theme',
+        'sphinx_holoviz_theme',
         'tornado <6.0'
     ]
 }
@@ -185,7 +190,7 @@ setup_args = dict(
     long_description_content_type="text/markdown",
     author= "Philipp Rudiger",
     author_email= "developers@pyviz.org",
-    maintainer="PyViz developers",
+    maintainer="HoloViz developers",
     maintainer_email="developers@pyviz.org",
     packages=find_packages()+packages,
     package_data={'hvplot': ['.version']},

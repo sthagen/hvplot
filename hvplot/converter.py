@@ -30,10 +30,10 @@ from holoviews.util.transform import dim
 from pandas import DatetimeIndex, MultiIndex
 
 from .util import (
-    filter_opts, is_tabular, is_series, is_dask, is_intake,
+    filter_opts, is_tabular, is_series, is_dask, is_intake, is_cudf,
     is_streamz, is_xarray, is_xarray_dataarray, process_crs,
     process_intake, process_xarray, check_library, is_geodataframe,
-    process_derived_datetime_xarray, process_derived_datetime_pandas
+    process_derived_datetime_xarray, process_derived_datetime_pandas,
 )
 
 renderer = hv.renderer('bokeh')
@@ -318,6 +318,7 @@ class HoloViewsConverter(object):
         self.use_index = use_index
         self.value_label = value_label
         self.group_label = group_label
+        self.label = label
         self._process_data(kind, data, x, y, by, groupby, row, col,
                            use_dask, persist, backlog, label, value_label,
                            hover_cols, attr_labels, kwds)
@@ -553,6 +554,7 @@ class HoloViewsConverter(object):
             data = data.to_frame()
         if is_intake(data):
             data = process_intake(data, use_dask or persist)
+        self.source_data = data
 
         if groupby is not None and not isinstance(groupby, list):
             groupby = [groupby]
@@ -586,6 +588,9 @@ class HoloViewsConverter(object):
         elif is_dask(data):
             datatype = 'dask'
             self.data = data.persist() if persist else data
+        elif is_cudf(data):
+            datatype = 'cudf'
+            self.data = data
         elif is_streamz(data):
             datatype = 'streamz'
             self.data = data.example
@@ -948,7 +953,12 @@ class HoloViewsConverter(object):
                 shape_dims = ['Longitude', 'Latitude'] if self.geo else ['x', 'y']
                 dataset = Dataset(data, kdims=shape_dims+columns)
             elif self.datatype == 'xarray':
-                dataset = Dataset(data, self.indexes)
+                import xarray as xr
+                if isinstance(data, xr.Dataset):
+                    dataset = Dataset(data, self.indexes)
+                else:
+                    name = data.name or self.label or self.value_label
+                    dataset = Dataset(data, self.indexes, name)
             else:
                 dataset = Dataset(data)
             dataset = dataset.redim(**self._redim)
@@ -987,7 +997,7 @@ class HoloViewsConverter(object):
                 obj = method(x, y, data=dataset.data)
 
             if self.gridded and self.by and not kind == 'points':
-                obj = obj.layout(self.by) if self.subplots else obj.overlay(self.by) 
+                obj = obj.layout(self.by) if self.subplots else obj.overlay(self.by)
             if self.grid:
                 obj = obj.grid(self.grid).opts(shared_xaxis=True, shared_yaxis=True)
         else:
@@ -996,7 +1006,23 @@ class HoloViewsConverter(object):
                                                periodic=self.cb)
                 obj = DynamicMap(cbcallable, streams=[self.stream])
             else:
+                data = self.source_data
+                if self.datatype in ('geopandas', 'spatialpandas'):
+                    columns = [c for c in data.columns if c != 'geometry']
+                    shape_dims = ['Longitude', 'Latitude'] if self.geo else ['x', 'y']
+                    dataset = Dataset(data, kdims=shape_dims+columns)
+                elif self.datatype == 'xarray':
+                    import xarray as xr
+                    if isinstance(data, xr.Dataset):
+                        dataset = Dataset(data, self.indexes)
+                    else:
+                        name = data.name or self.label or self.value_label
+                        dataset = Dataset(data, self.indexes, name)
+                else:
+                    dataset = Dataset(data)
+                    dataset = dataset.redim(**self._redim)
                 obj = method(x, y)
+                obj._dataset = dataset
 
         if self.crs and self.project:
             # Apply projection before rasterizing
@@ -1199,7 +1225,7 @@ class HoloViewsConverter(object):
                         .opts(opts))
             chart = Dataset(data, self.by+kdims, vdims).to(
                 element, kdims, vdims, self.by).relabel(**self._relabel)
-            chart = chart.layout() if self.subplots else chart.overlay()
+            chart = chart.layout() if self.subplots else chart.overlay(sort=False)
         else:
             chart = element(data, kdims, vdims).relabel(**self._relabel)
         return chart.redim(**self._redim).opts(opts)
@@ -1448,7 +1474,7 @@ class HoloViewsConverter(object):
                     ds.groupby(self.by), dimension=y, **hist_opts
                 )
                 hist = hists.last
-                hists = hists.layout() if self.subplots else hists.overlay()
+                hists = hists.layout() if self.subplots else hists.overlay(sort=False)
             else:
                 hists = histogram(ds, dimension=y, **hist_opts)
 
@@ -1489,7 +1515,7 @@ class HoloViewsConverter(object):
             ranges = {y: xlim}
             if self.by:
                 dists = Dataset(data).to(Distribution, y, [], self.by)
-                dists = dists.layout() if self.subplots else dists.overlay()
+                dists = dists.layout() if self.subplots else dists.overlay(sort=False)
             else:
                 dists = Distribution(data, y, [])
         else:
@@ -1498,7 +1524,8 @@ class HoloViewsConverter(object):
             df = pd.melt(data, var_name=self.group_label, value_name=self.value_label)
             ds = Dataset(df)
             if len(df):
-                dists = ds.to(Distribution, self.value_label).overlay()
+                dists = ds.to(Distribution, self.value_label)
+                dists = dists.layout() if self.subplots else dists.overlay(sort=False)
             else:
                 vdim = self.value_label + ' Density'
                 dists = NdOverlay({0: Area([], self.value_label, vdim)},
@@ -1761,7 +1788,7 @@ class HoloViewsConverter(object):
         opts = self._get_opts(element.name)
         if self.geo: params['crs'] = self.crs
         if self.by:
-            obj = Dataset(data).to(element, kdims, vdims, self.by, **params).overlay()
+            obj = Dataset(data).to(element, kdims, vdims, self.by, **params).overlay(sort=False)
         else:
             obj = element(data, kdims, vdims, **params)
 

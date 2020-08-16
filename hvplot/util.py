@@ -231,6 +231,11 @@ def check_library(obj, library):
         library = [library]
     return any([obj.__module__.split('.')[0].startswith(l) for l in library])
 
+def is_cudf(data):
+    if 'cudf' in sys.modules:
+        from cudf import DataFrame, Series
+        return isinstance(data, (DataFrame, Series))
+
 def is_dask(data):
     if not check_library(data, 'dask'):
         return False
@@ -399,7 +404,8 @@ def process_derived_datetime_pandas(data, not_found, indexes=None):
                 index = data.axes[indexes.index(base_col)]
                 if isdate(index):
                     extra_cols[var] = getattr(index, dt_str)
-    data = data.assign(**extra_cols)
+    if extra_cols:
+        data = data.assign(**extra_cols)
     not_found = [var for var in not_found if var not in extra_cols.keys()]
 
     return not_found, data
